@@ -2,6 +2,8 @@ extern crate futures;
 
 use futures::{Async, Poll, Future, Stream};
 
+pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
+
 pub enum StreamEvent<I, S> {
     Next(I),
     Done(S),
@@ -15,6 +17,13 @@ pub trait StateStream {
     fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, Self::Error>;
 
     #[inline]
+    fn boxed(self) -> BoxStateStream<Self::Item, Self::State, Self::Error>
+        where Self: Sized + Send + 'static
+    {
+        Box::new(self)
+    }
+
+    #[inline]
     fn into_future(self) -> IntoFuture<Self>
         where Self: Sized
     {
@@ -26,6 +35,19 @@ pub trait StateStream {
         where Self: Sized
     {
         IntoStream(self)
+    }
+}
+
+impl<S: ?Sized> StateStream for Box<S>
+    where S: StateStream
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, S::Error> {
+        S::poll(self)
     }
 }
 
