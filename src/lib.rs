@@ -102,6 +102,17 @@ pub fn stream<S>(stream: S) -> FromStream<S>
     FromStream(stream)
 }
 
+#[inline]
+pub fn unfold<T, F, Fut, It, St>(init: T, f: F) -> Unfold<T, F, Fut>
+     where F: FnMut(T) -> Fut,
+           Fut: futures::IntoFuture<Item = StreamEvent<(It, T), St>>
+{
+    Unfold {
+        state: UnfoldState::Ready(init),
+        f: f,
+    }
+}
+
 pub struct FromStream<S>(S);
 
 impl<S> StateStream for FromStream<S>
@@ -265,6 +276,56 @@ impl<S> Future for Collect<S>
                 }
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+pub struct Unfold<T, F, Fut>
+    where Fut: futures::IntoFuture
+{
+    state: UnfoldState<T, Fut::Future>,
+    f: F,
+}
+
+enum UnfoldState<T, F>
+{
+    Empty,
+    Ready(T),
+    Processing(F),
+}
+
+impl<T, F, Fut, It, St> StateStream for Unfold<T, F, Fut>
+    where F: FnMut(T) -> Fut,
+          Fut: futures::IntoFuture<Item = StreamEvent<(It, T), St>>
+{
+    type Item = It;
+    type State = St;
+    type Error = Fut::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<It, St>, Fut::Error> {
+        loop {
+            match mem::replace(&mut self.state, UnfoldState::Empty) {
+                UnfoldState::Empty => panic!("polled an Unfold after completion"),
+                UnfoldState::Ready(state) => {
+                    self.state = UnfoldState::Processing((self.f)(state).into_future())
+                }
+                UnfoldState::Processing(mut fut) => {
+                    match try!(fut.poll()) {
+                        Async::Ready(StreamEvent::Next((i, state))) => {
+                            self.state = UnfoldState::Ready(state);
+                            return Ok(Async::Ready(StreamEvent::Next(i)));
+                        }
+                        Async::Ready(StreamEvent::Done(s)) => {
+                            return Ok(Async::Ready(StreamEvent::Done(s)));
+                        }
+                        Async::NotReady => {
+                            self.state = UnfoldState::Processing(fut);
+                            return Ok(Async::NotReady);
+                        }
+                    }
+                }
             }
         }
     }
