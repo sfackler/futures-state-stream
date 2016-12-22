@@ -36,6 +36,17 @@ pub trait StateStream {
     {
         IntoStream(self)
     }
+
+    #[inline]
+    fn map<F, B>(self, f: F) -> Map<Self, F>
+        where Self: Sized,
+              F: FnMut(Self::Item) -> B
+    {
+        Map {
+            stream: self,
+            f: f,
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -115,6 +126,31 @@ impl<S> Stream for IntoStream<S>
             match a {
                 Async::Ready(StreamEvent::Next(i)) => Async::Ready(Some(i)),
                 Async::Ready(StreamEvent::Done(_)) => Async::Ready(None),
+                Async::NotReady => Async::NotReady,
+            }
+        })
+    }
+}
+
+pub struct Map<S, F> {
+    stream: S,
+    f: F,
+}
+
+impl<S, F, B> StateStream for Map<S, F>
+    where S: StateStream,
+          F: FnMut(S::Item) -> B
+{
+    type Item = B;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<B, S::State>, S::Error> {
+        self.stream.poll().map(|a| {
+            match a {
+                Async::Ready(StreamEvent::Next(i)) => Async::Ready(StreamEvent::Next((self.f)(i))),
+                Async::Ready(StreamEvent::Done(s)) => Async::Ready(StreamEvent::Done(s)),
                 Async::NotReady => Async::NotReady,
             }
         })
