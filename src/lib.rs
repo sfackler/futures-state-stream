@@ -58,6 +58,17 @@ pub trait StateStream {
             f: f,
         }
     }
+
+    #[inline]
+    fn  map_state<F, B>(self, f: F) -> MapState<Self, F>
+        where Self: Sized,
+              F: FnOnce(Self::State) -> B
+    {
+        MapState {
+            stream: self,
+            f: Some(f),
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -73,6 +84,7 @@ impl<S: ?Sized> StateStream for Box<S>
     }
 }
 
+#[inline]
 pub fn stream<S>(stream: S) -> FromStream<S>
     where S: Stream
 {
@@ -187,5 +199,33 @@ impl<S, F, B> StateStream for MapErr<S, F>
             Ok(a) => Ok(a),
             Err(e) => Err((self.f)(e))
         }
+    }
+}
+
+pub struct MapState<S, F> {
+    stream: S,
+    f: Option<F>,
+}
+
+impl<S, F, B> StateStream for MapState<S, F>
+    where S: StateStream,
+          F: FnOnce(S::State) -> B
+{
+    type Item = S::Item;
+    type State = B;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, B>, S::Error> {
+        self.stream.poll().map(|a| {
+            match a {
+                Async::Ready(StreamEvent::Next(i)) => Async::Ready(StreamEvent::Next(i)),
+                Async::Ready(StreamEvent::Done(s)) => {
+                    let f = self.f.take().expect("polled MapState after completion");
+                    Async::Ready(StreamEvent::Done(f(s)))
+                }
+                Async::NotReady => Async::NotReady,
+            }
+        })
     }
 }
