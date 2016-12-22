@@ -1,6 +1,7 @@
 extern crate futures;
 
 use futures::{Async, Poll, Future, Stream};
+use std::mem;
 
 pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
 
@@ -60,13 +61,23 @@ pub trait StateStream {
     }
 
     #[inline]
-    fn  map_state<F, B>(self, f: F) -> MapState<Self, F>
+    fn map_state<F, B>(self, f: F) -> MapState<Self, F>
         where Self: Sized,
               F: FnOnce(Self::State) -> B
     {
         MapState {
             stream: self,
             f: Some(f),
+        }
+    }
+
+    #[inline]
+    fn collect(self) -> Collect<Self>
+        where Self: Sized
+    {
+        Collect {
+            stream: self,
+            items: vec![],
         }
     }
 }
@@ -227,5 +238,34 @@ impl<S, F, B> StateStream for MapState<S, F>
                 Async::NotReady => Async::NotReady,
             }
         })
+    }
+}
+
+pub struct Collect<S>
+    where S: StateStream
+{
+    stream: S,
+    items: Vec<S::Item>,
+}
+
+impl<S> Future for Collect<S>
+    where S: StateStream
+{
+    type Item = (Vec<S::Item>, S::State);
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<(Vec<S::Item>, S::State), S::Error> {
+        loop {
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => self.items.push(i),
+                Ok(Async::Ready(StreamEvent::Done(s))) => {
+                    let items = mem::replace(&mut self.items, vec![]);
+                    return Ok(Async::Ready((items, s)))
+                }
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(e) => return Err(e),
+            }
+        }
     }
 }
