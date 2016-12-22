@@ -20,6 +20,13 @@ pub trait StateStream {
     {
         IntoFuture(Some(self))
     }
+
+    #[inline]
+    fn into_stream(self) -> IntoStream<Self>
+        where Self: Sized
+    {
+        IntoStream(self)
+    }
 }
 
 pub fn stream<S>(stream: S) -> FromStream<S>
@@ -69,5 +76,25 @@ impl<S> Future for IntoFuture<S>
             Ok(i) => Ok(Async::Ready((i, stream))),
             Err(e) => Err((e, stream)),
         }
+    }
+}
+
+pub struct IntoStream<S>(S);
+
+impl<S> Stream for IntoStream<S>
+    where S: StateStream
+{
+    type Item = S::Item;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<Option<S::Item>, S::Error> {
+        self.0.poll().map(|a| {
+            match a {
+                Async::Ready(StreamEvent::Next(i)) => Async::Ready(Some(i)),
+                Async::Ready(StreamEvent::Done(_)) => Async::Ready(None),
+                Async::NotReady => Async::NotReady,
+            }
+        })
     }
 }
