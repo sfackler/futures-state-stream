@@ -47,6 +47,17 @@ pub trait StateStream {
             f: f,
         }
     }
+
+    #[inline]
+    fn map_err<F, B>(self, f: F) -> MapErr<Self, F>
+        where Self: Sized,
+              F: FnMut(Self::Error) -> B
+    {
+        MapErr {
+            stream: self,
+            f: f,
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -154,5 +165,27 @@ impl<S, F, B> StateStream for Map<S, F>
                 Async::NotReady => Async::NotReady,
             }
         })
+    }
+}
+
+pub struct MapErr<S, F> {
+    stream: S,
+    f: F,
+}
+
+impl<S, F, B> StateStream for MapErr<S, F>
+    where S: StateStream,
+          F: FnMut(S::Error) -> B
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = B;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, B> {
+        match self.stream.poll() {
+            Ok(a) => Ok(a),
+            Err(e) => Err((self.f)(e))
+        }
     }
 }
