@@ -83,6 +83,18 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn filter_map<F, B>(self, f: F) -> FilterMap<Self, F>
+        where Self: Sized,
+              F: FnMut(Self::Item) -> Option<B>
+    {
+
+        FilterMap {
+            stream: self,
+            f: f,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -414,6 +426,38 @@ impl<S, F> StateStream for Filter<S, F>
                     }
                 }
                 s => return s,
+            }
+        }
+    }
+}
+
+pub struct FilterMap<S, F> {
+    stream: S,
+    f: F,
+}
+
+impl<S, F, B> StateStream for FilterMap<S, F>
+    where S: StateStream,
+          F: FnMut(S::Item) -> Option<B>
+{
+    type Item = B;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<B, S::State>, S::Error> {
+        loop {
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => {
+                    if let Some(i) = (self.f)(i) {
+                        return Ok(Async::Ready(StreamEvent::Next(i)));
+                    }
+                }
+                Ok(Async::Ready(StreamEvent::Done(s))) => {
+                    return Ok(Async::Ready(StreamEvent::Done(s)));
+                }
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(e) => return Err(e),
             }
         }
     }
