@@ -158,6 +158,23 @@ pub trait StateStream {
             items: vec![],
         }
     }
+
+    #[inline]
+    fn fold<T, F, Fut, G, Fut2>(self, init: T, next: F, done: G) -> Fold<Self, T, F, Fut, G, Fut2>
+        where Self: Sized,
+              F: FnMut(T, Self::Item) -> Fut,
+              Fut: futures::IntoFuture<Item = T>,
+              Self::Error: From<Fut::Error>,
+              G: FnOnce(T, Self::State) -> Fut2,
+              Fut2: futures::IntoFuture<Item = T>,
+              Self::Error: From<Fut2::Error>
+    {
+        Fold {
+            stream: self,
+            next: next,
+            state: FoldState::Ready(init, done),
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -681,6 +698,79 @@ where S: StateStream,
                 }
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Err(e) => self.fut = Some((self.f)(e).into_future()),
+            }
+        }
+    }
+}
+
+enum FoldState<T, Fut, G, Fut2>
+    where Fut: futures::IntoFuture,
+          Fut2: futures::IntoFuture
+{
+    Ready(T, G),
+    Processing(Fut::Future, G),
+    ProcessingDone(Fut2::Future),
+    Empty,
+}
+
+pub struct Fold<S, T, F, Fut, G, Fut2>
+    where Fut: futures::IntoFuture,
+          Fut2: futures::IntoFuture
+{
+    stream: S,
+    next: F,
+    state: FoldState<T, Fut, G, Fut2>,
+}
+
+impl<S, T, F, Fut, G, Fut2> Future for Fold<S, T, F, Fut, G, Fut2>
+    where S: StateStream,
+          F: FnMut(T, S::Item) -> Fut,
+          Fut: futures::IntoFuture<Item = T>,
+          S::Error: From<Fut::Error>,
+          G: FnOnce(T, S::State) -> Fut2,
+          Fut2: futures::IntoFuture<Item = T>,
+          S::Error: From<Fut2::Error>
+{
+    type Item = T;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<T, S::Error> {
+        loop {
+            match mem::replace(&mut self.state, FoldState::Empty) {
+                FoldState::Ready(t, g) => {
+                    match try!(self.stream.poll()) {
+                        Async::Ready(StreamEvent::Next(i)) => {
+                            self.state = FoldState::Processing((self.next)(t, i).into_future(), g);
+                        }
+                        Async::Ready(StreamEvent::Done(s)) => {
+                            self.state = FoldState::ProcessingDone(g(t, s).into_future());
+                        }
+                        Async::NotReady => {
+                            self.state = FoldState::Ready(t, g);
+                            return Ok(Async::NotReady);
+                        }
+                    }
+                }
+                FoldState::Processing(mut fut, g) => {
+                    match try!(fut.poll()) {
+                        Async::Ready(t) => self.state = FoldState::Ready(t, g),
+                        Async::NotReady => {
+                            self.state = FoldState::Processing(fut, g);
+                            return Ok(Async::NotReady);
+                        }
+                    }
+                }
+                FoldState::ProcessingDone(mut fut) => {
+                    match try!(fut.poll()) {
+                        Async::Ready(t) => return Ok(Async::Ready(t)),
+                        Async::NotReady => {
+                            self.state = FoldState::ProcessingDone(fut);
+                            return Ok(Async::NotReady);
+                        }
+                    }
+                }
+                FoldState::Empty => panic!("cannot poll Fold twice"),
             }
         }
     }
