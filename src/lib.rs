@@ -109,6 +109,20 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn and_then<F, U>(self, f: F) -> AndThen<Self, F, U>
+        where Self: Sized,
+              F: FnMut(Self::Item) -> U,
+              U: futures::IntoFuture,
+              Self::Error: From<U::Error>
+    {
+        AndThen {
+            stream: self,
+            f: f,
+            fut: None,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -516,6 +530,46 @@ impl<S, F, U> StateStream for Then<S, F, U>
                 }
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
                 Err(e) => self.fut = Some((self.f)(Err(e)).into_future()),
+            }
+        }
+    }
+}
+
+pub struct AndThen<S, F, U>
+    where U: futures::IntoFuture
+{
+    stream: S,
+    f: F,
+    fut: Option<U::Future>,
+}
+
+impl<S, F, U> StateStream for AndThen<S, F, U>
+where S: StateStream,
+      F: FnMut(S::Item) -> U,
+      U: futures::IntoFuture,
+      S::Error: From<U::Error>,
+{
+    type Item = U::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<U::Item, S::State>, S::Error> {
+        loop {
+            if let Some(mut fut) = self.fut.take() {
+                match try!(fut.poll()) {
+                    Async::Ready(i) => return Ok(Async::Ready(StreamEvent::Next(i))),
+                    Async::NotReady => {
+                        self.fut = Some(fut);
+                        return Ok(Async::NotReady);
+                    }
+                }
+            }
+
+            match try!(self.stream.poll()) {
+                Async::Ready(StreamEvent::Next(i)) => self.fut = Some((self.f)(i).into_future()),
+                Async::Ready(StreamEvent::Done(s)) => return Ok(Async::Ready(StreamEvent::Done(s))),
+                Async::NotReady => return Ok(Async::NotReady),
             }
         }
     }
