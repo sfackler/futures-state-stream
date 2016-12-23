@@ -72,6 +72,17 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn filter<F>(self, f: F) -> Filter<Self, F>
+        where Self: Sized,
+              F: FnMut(&Self::Item) -> bool
+    {
+        Filter {
+            stream: self,
+            f: f,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -376,6 +387,34 @@ impl<F> StateStream for FlattenStateStream<F>
                 }
                 FlattenStateStreamState::Stream(ref mut s) => return s.poll(),
             };
+        }
+    }
+}
+
+pub struct Filter<S, F> {
+    stream: S,
+    f: F,
+}
+
+impl<S, F> StateStream for Filter<S, F>
+    where S: StateStream,
+          F: FnMut(&S::Item) -> bool
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, S::Error> {
+        loop {
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => {
+                    if (self.f)(&i) {
+                        return Ok(Async::Ready(StreamEvent::Next(i)));
+                    }
+                }
+                s => return s,
+            }
         }
     }
 }
