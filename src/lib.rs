@@ -137,6 +137,19 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn or_else<F, U>(self, f: F) -> OrElse<Self, F, U>
+        where Self: Sized,
+              F: FnMut(Self::Error) -> U,
+              U: futures::IntoFuture<Item = Self::Item>
+    {
+        OrElse {
+            stream: self,
+            f: f,
+            fut: None,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -624,6 +637,50 @@ where S: StateStream,
                 Async::Ready(StreamEvent::Next(s)) => return Ok(Async::Ready(StreamEvent::Next(s))),
                 Async::Ready(StreamEvent::Done(i)) => self.fut = Some((self.f)(i).into_future()),
                 Async::NotReady => return Ok(Async::NotReady),
+            }
+        }
+    }
+}
+
+pub struct OrElse<S, F, U>
+    where U: futures::IntoFuture
+{
+    stream: S,
+    f: F,
+    fut: Option<U::Future>,
+}
+
+impl<S, F, U> StateStream for OrElse<S, F, U>
+where S: StateStream,
+      F: FnMut(S::Error) -> U,
+      U: futures::IntoFuture<Item = S::Item>
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = U::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, U::Error> {
+        loop {
+            if let Some(mut fut) = self.fut.take() {
+                match try!(fut.poll()) {
+                    Async::Ready(i) => return Ok(Async::Ready(StreamEvent::Next(i))),
+                    Async::NotReady => {
+                        self.fut = Some(fut);
+                        return Ok(Async::NotReady);
+                    }
+                }
+            }
+
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => {
+                    return Ok(Async::Ready(StreamEvent::Next(i)));
+                }
+                Ok(Async::Ready(StreamEvent::Done(s))) => {
+                    return Ok(Async::Ready(StreamEvent::Done(s)));
+                }
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(e) => self.fut = Some((self.f)(e).into_future()),
             }
         }
     }
