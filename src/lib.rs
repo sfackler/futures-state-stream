@@ -123,6 +123,20 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn and_then_state<F, U>(self, f: F) -> AndThenState<Self, F, U>
+        where Self: Sized,
+              F: FnMut(Self::State) -> U,
+              U: futures::IntoFuture,
+              Self::Error: From<U::Error>
+    {
+        AndThenState {
+            stream: self,
+            f: f,
+            fut: None,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -569,6 +583,46 @@ where S: StateStream,
             match try!(self.stream.poll()) {
                 Async::Ready(StreamEvent::Next(i)) => self.fut = Some((self.f)(i).into_future()),
                 Async::Ready(StreamEvent::Done(s)) => return Ok(Async::Ready(StreamEvent::Done(s))),
+                Async::NotReady => return Ok(Async::NotReady),
+            }
+        }
+    }
+}
+
+pub struct AndThenState<S, F, U>
+    where U: futures::IntoFuture
+{
+    stream: S,
+    f: F,
+    fut: Option<U::Future>,
+}
+
+impl<S, F, U> StateStream for AndThenState<S, F, U>
+where S: StateStream,
+      F: FnMut(S::State) -> U,
+      U: futures::IntoFuture,
+      S::Error: From<U::Error>,
+{
+    type Item = S::Item;
+    type State = U::Item;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, U::Item>, S::Error> {
+        loop {
+            if let Some(mut fut) = self.fut.take() {
+                match try!(fut.poll()) {
+                    Async::Ready(i) => return Ok(Async::Ready(StreamEvent::Done(i))),
+                    Async::NotReady => {
+                        self.fut = Some(fut);
+                        return Ok(Async::NotReady);
+                    }
+                }
+            }
+
+            match try!(self.stream.poll()) {
+                Async::Ready(StreamEvent::Next(s)) => return Ok(Async::Ready(StreamEvent::Next(s))),
+                Async::Ready(StreamEvent::Done(i)) => self.fut = Some((self.f)(i).into_future()),
                 Async::NotReady => return Ok(Async::NotReady),
             }
         }
