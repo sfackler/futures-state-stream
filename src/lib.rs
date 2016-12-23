@@ -95,6 +95,20 @@ impl<S: ?Sized> StateStream for Box<S>
     }
 }
 
+pub trait FutureExt: Future {
+    #[inline]
+    fn flatten_state_stream(self) -> FlattenStateStream<Self>
+        where Self: Sized,
+              Self::Item: StateStream<Error = Self::Error>
+    {
+        FlattenStateStream(FlattenStateStreamState::Future(self))
+    }
+}
+
+impl<F: ?Sized> FutureExt for F
+    where F: Future
+{}
+
 #[inline]
 pub fn stream<S>(stream: S) -> FromStream<S>
     where S: Stream
@@ -327,6 +341,41 @@ impl<T, F, Fut, It, St> StateStream for Unfold<T, F, Fut>
                     }
                 }
             }
+        }
+    }
+}
+
+enum FlattenStateStreamState<F>
+    where F: Future
+{
+    Future(F),
+    Stream(F::Item),
+}
+
+pub struct FlattenStateStream<F>(FlattenStateStreamState<F>)
+    where F: Future;
+
+impl<F> StateStream for FlattenStateStream<F>
+    where F: Future,
+          F::Item: StateStream<Error = F::Error>
+{
+    type Item = <F::Item as StateStream>::Item;
+    type State = <F::Item as StateStream>::State;
+    type Error = F::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, Self::Error> {
+        loop {
+            self.0 = match self.0 {
+                FlattenStateStreamState::Future(ref mut f) => {
+                    match f.poll() {
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Ok(Async::Ready(stream)) => FlattenStateStreamState::Stream(stream),
+                        Err(e) => return Err(e),
+                    }
+                }
+                FlattenStateStreamState::Stream(ref mut s) => return s.poll(),
+            };
         }
     }
 }
