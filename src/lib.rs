@@ -95,6 +95,20 @@ pub trait StateStream {
     }
 
     #[inline]
+    fn then<F, U>(self, f: F) -> Then<Self, F, U>
+        where Self: Sized,
+              F: FnMut(Result<Self::Item, Self::Error>) -> U,
+              U: futures::IntoFuture,
+              Self::Error: From<U::Error>
+    {
+        Then {
+            stream: self,
+            f: f,
+            fut: None,
+        }
+    }
+
+    #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
     {
@@ -447,17 +461,61 @@ impl<S, F, B> StateStream for FilterMap<S, F>
     #[inline]
     fn poll(&mut self) -> Poll<StreamEvent<B, S::State>, S::Error> {
         loop {
-            match self.stream.poll() {
-                Ok(Async::Ready(StreamEvent::Next(i))) => {
+            match try!(self.stream.poll()) {
+                Async::Ready(StreamEvent::Next(i)) => {
                     if let Some(i) = (self.f)(i) {
                         return Ok(Async::Ready(StreamEvent::Next(i)));
                     }
+                }
+                Async::Ready(StreamEvent::Done(s)) => {
+                    return Ok(Async::Ready(StreamEvent::Done(s)));
+                }
+                Async::NotReady => return Ok(Async::NotReady),
+            }
+        }
+    }
+}
+
+pub struct Then<S, F, U>
+    where U: futures::IntoFuture
+{
+    stream: S,
+    f: F,
+    fut: Option<U::Future>,
+}
+
+impl<S, F, U> StateStream for Then<S, F, U>
+    where S: StateStream,
+          F: FnMut(Result<S::Item, S::Error>) -> U,
+          U: futures::IntoFuture,
+          S::Error: From<U::Error>,
+{
+    type Item = U::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<U::Item, S::State>, S::Error> {
+        loop {
+            if let Some(mut fut) = self.fut.take() {
+                match try!(fut.poll()) {
+                    Async::Ready(i) => return Ok(Async::Ready(StreamEvent::Next(i))),
+                    Async::NotReady => {
+                        self.fut = Some(fut);
+                        return Ok(Async::NotReady);
+                    }
+                }
+            }
+
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => {
+                    self.fut = Some((self.f)(Ok(i)).into_future());
                 }
                 Ok(Async::Ready(StreamEvent::Done(s))) => {
                     return Ok(Async::Ready(StreamEvent::Done(s)));
                 }
                 Ok(Async::NotReady) => return Ok(Async::NotReady),
-                Err(e) => return Err(e),
+                Err(e) => self.fut = Some((self.f)(Err(e)).into_future()),
             }
         }
     }
