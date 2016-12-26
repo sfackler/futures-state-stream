@@ -225,6 +225,25 @@ pub trait StateStream {
             state: BufferedStreamState::Working(amt),
         }
     }
+
+    #[inline]
+    fn buffered_unordered(self, amt: usize) -> BufferedUnordered<Self>
+        where Self: Sized,
+              Self::Item: futures::IntoFuture<Error = Self::Error>
+    {
+        assert!(amt > 0);
+
+        let mut buf = Vec::with_capacity(amt);
+        for _ in 0..amt {
+            buf.push(UnorderedValueState::Empty);
+        }
+
+        BufferedUnordered {
+            stream: self,
+            buf: buf,
+            state: UnorderedStreamState::Working,
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -1024,5 +1043,89 @@ impl<S> StateStream for Buffered<S>
                 Ok(Async::NotReady)
             }
         }
+    }
+}
+
+enum UnorderedValueState<F>
+    where F: Future
+{
+    Empty,
+    Pending(F),
+    Done(Result<F::Item, F::Error>),
+}
+
+enum UnorderedStreamState<S> {
+    Working,
+    Done(Option<S>),
+}
+
+pub struct BufferedUnordered<S>
+    where S: StateStream,
+          S::Item: futures::IntoFuture<Error=S::Error>
+{
+    stream: S,
+    buf: Vec<UnorderedValueState<<S::Item as futures::IntoFuture>::Future>>,
+    state: UnorderedStreamState<S::State>,
+}
+
+impl<S> StateStream for BufferedUnordered<S>
+    where S: StateStream,
+          S::Item: futures::IntoFuture<Error=S::Error>
+{
+    type Item = < S::Item as futures::IntoFuture >::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, Self::Error> {
+        if let UnorderedStreamState::Done(ref mut s) = self.state {
+            let s = s.take().expect("called poll on Buffered after completion");
+            return Ok(Async::Ready(StreamEvent::Done(s)));
+        }
+
+        for elt in &mut self.buf {
+            if let UnorderedValueState::Empty = *elt {
+                match try!(self.stream.poll()) {
+                    Async::Ready(StreamEvent::Next(i)) => {
+                        *elt = UnorderedValueState::Pending(i.into_future());
+                    }
+                    Async::Ready(StreamEvent::Done(s)) => {
+                        self.state = UnorderedStreamState::Done(Some(s));
+                        break;
+                    }
+                    Async::NotReady => break,
+                }
+            }
+        }
+
+        for elt in &mut self.buf {
+            let value = match *elt {
+                UnorderedValueState::Pending(ref mut f) => {
+                    match f.poll() {
+                        Ok(Async::Ready(v)) => Ok(v),
+                        Ok(Async::NotReady) => continue,
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => continue,
+            };
+            *elt = UnorderedValueState::Done(value);
+        }
+
+        for elt in &mut self.buf {
+            let (ret, value) = match mem::replace(elt, UnorderedValueState::Empty) {
+                UnorderedValueState::Done(Ok(v)) => {
+                    (Some(Ok(Async::Ready(StreamEvent::Next(v)))), UnorderedValueState::Empty)
+                }
+                UnorderedValueState::Done(Err(e)) => (Some(Err(e)), UnorderedValueState::Empty),
+                elt => (None, elt),
+            };
+            *elt = value;
+            if let Some(ret) = ret {
+                return ret;
+            }
+        }
+
+        Ok(Async::NotReady)
     }
 }
