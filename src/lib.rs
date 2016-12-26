@@ -2,7 +2,9 @@
 extern crate futures;
 
 use futures::{Async, Poll, Future, Stream};
+use std::any::Any;
 use std::mem;
+use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
 pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
 
@@ -200,6 +202,13 @@ pub trait StateStream {
             stream: self,
             f: f,
         }
+    }
+
+    #[inline]
+    fn catch_unwind(self) -> CatchUnwind<Self>
+        where Self: Sized + UnwindSafe
+    {
+        CatchUnwind(self)
     }
 }
 
@@ -872,6 +881,30 @@ impl<S, F> Future for ForEach<S, F>
                 StreamEvent::Next(i) => try!((self.f)(i)),
                 StreamEvent::Done(s) => return Ok(Async::Ready(s)),
             }
+        }
+    }
+}
+
+pub struct CatchUnwind<S>(S);
+
+impl<S> StateStream for CatchUnwind<S>
+    where S: StateStream + UnwindSafe
+{
+    type Item = Result<S::Item, S::Error>;
+    type State = S::State;
+    type Error = Box<Any + Send>;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<Result<S::Item, S::Error>, S::State>, Box<Any + Send>> {
+        match try!(panic::catch_unwind(AssertUnwindSafe(move || self.0.poll()))) {
+            Ok(Async::Ready(StreamEvent::Next(i))) => {
+                Ok(Async::Ready(StreamEvent::Next(Ok(i))))
+            }
+            Ok(Async::Ready(StreamEvent::Done(s))) => {
+                Ok(Async::Ready(StreamEvent::Done(s)))
+            }
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(e) => Ok(Async::Ready(StreamEvent::Next(Err(e)))),
         }
     }
 }
