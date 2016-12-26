@@ -225,6 +225,19 @@ impl<S: ?Sized> StateStream for Box<S>
     }
 }
 
+impl<S> StateStream for AssertUnwindSafe<S>
+    where S: StateStream
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, S::Error> {
+        self.0.poll()
+    }
+}
+
 pub trait FutureExt: Future {
     #[inline]
     fn flatten_state_stream(self) -> FlattenStateStream<Self>
