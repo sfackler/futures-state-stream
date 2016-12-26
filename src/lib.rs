@@ -1,8 +1,9 @@
 #[macro_use]
 extern crate futures;
 
-use futures::{Async, Poll, Future, Stream};
+use futures::{Async, Poll, Future, Stream, IntoFuture as IntoFutureTrait};
 use std::any::Any;
+use std::collections::VecDeque;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
@@ -209,6 +210,20 @@ pub trait StateStream {
         where Self: Sized + UnwindSafe
     {
         CatchUnwind(self)
+    }
+
+    #[inline]
+    fn buffered(self, amt: usize) -> Buffered<Self>
+        where Self: Sized,
+              Self::Item: futures::IntoFuture<Error = Self::Error>
+    {
+        assert!(amt > 0);
+
+        Buffered {
+            stream: self,
+            buf: VecDeque::with_capacity(amt),
+            state: BufferedStreamState::Working(amt),
+        }
     }
 }
 
@@ -931,6 +946,83 @@ impl<S> StateStream for CatchUnwind<S>
             }
             Ok(Async::NotReady) => Ok(Async::NotReady),
             Err(e) => Ok(Async::Ready(StreamEvent::Next(Err(e)))),
+        }
+    }
+}
+
+enum BufferState<F>
+    where F: Future
+{
+    Pending(F),
+    Done(Result<F::Item, F::Error>),
+}
+
+enum BufferedStreamState<S> {
+    Working(usize),
+    Done(Option<S>),
+}
+
+pub struct Buffered<S>
+    where S: StateStream,
+          S::Item: futures::IntoFuture<Error=S::Error>
+{
+    stream: S,
+    buf: VecDeque<BufferState<<S::Item as futures::IntoFuture>::Future>>,
+    state: BufferedStreamState<S::State>,
+}
+
+impl<S> StateStream for Buffered<S>
+    where S: StateStream,
+          S::Item: futures::IntoFuture<Error=S::Error>
+{
+    type Item = <S::Item as futures::IntoFuture>::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, Self::Error> {
+        let amt = match self.state {
+            BufferedStreamState::Working(amt) => amt,
+            BufferedStreamState::Done(ref mut s) => {
+                let s = s.take().expect("called poll on Buffered after completion");
+                return Ok(Async::Ready(StreamEvent::Done(s)));
+            }
+        };
+
+        while self.buf.len() < amt {
+            match try!(self.stream.poll()) {
+                Async::Ready(StreamEvent::Next(i)) => {
+                    self.buf.push_back(BufferState::Pending(i.into_future()));
+                }
+                Async::Ready(StreamEvent::Done(s)) => {
+                    self.state = BufferedStreamState::Done(Some(s));
+                    break;
+                }
+                Async::NotReady => break,
+            }
+        }
+
+        for elt in &mut self.buf {
+            let value = match *elt {
+                BufferState::Done(_) => continue,
+                BufferState::Pending(ref mut f) => {
+                    match f.poll() {
+                        Ok(Async::Ready(v)) => Ok(v),
+                        Ok(Async::NotReady) => continue,
+                        Err(e) => Err(e),
+                    }
+                }
+            };
+            *elt = BufferState::Done(value);
+        }
+
+        match self.buf.pop_front().unwrap() {
+            BufferState::Done(Ok(v)) => Ok(Async::Ready(StreamEvent::Next(v))),
+            BufferState::Done(Err(e)) => Err(e),
+            v @ BufferState::Pending(_) => {
+                self.buf.push_front(v);
+                Ok(Async::NotReady)
+            }
         }
     }
 }
