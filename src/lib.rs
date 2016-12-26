@@ -190,6 +190,17 @@ pub trait StateStream {
             done: false,
         }
     }
+
+    #[inline]
+    fn for_each<F>(self, f: F) -> ForEach<Self, F>
+        where Self: Sized,
+              F: FnMut(Self::Item) -> Result<(), Self::Error>
+    {
+        ForEach {
+            stream: self,
+            f: f,
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -837,6 +848,29 @@ impl<S, P, R> StateStream for SkipWhile<S, P, R>
                     self.cur = Some((fut, i));
                 }
                 StreamEvent::Done(s) => return Ok(Async::Ready(StreamEvent::Done(s))),
+            }
+        }
+    }
+}
+
+pub struct ForEach<S, F> {
+    stream: S,
+    f: F,
+}
+
+impl<S, F> Future for ForEach<S, F>
+    where S: StateStream,
+          F: FnMut(S::Item) -> Result<(), S::Error>
+{
+    type Item = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<S::State, S::Error> {
+        loop {
+            match try_ready!(self.stream.poll()) {
+                StreamEvent::Next(i) => try!((self.f)(i)),
+                StreamEvent::Done(s) => return Ok(Async::Ready(s)),
             }
         }
     }
