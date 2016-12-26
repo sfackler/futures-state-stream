@@ -1,3 +1,9 @@
+//! A version of the `futures` crate's `Stream` which returns a state value when it completes.
+//!
+//! This is useful in contexts where a value "becomes" a stream for a period of time, but then
+//! switches back to its original type.
+#![warn(missing_docs)]
+
 #[macro_use]
 extern crate futures;
 
@@ -7,20 +13,33 @@ use std::collections::VecDeque;
 use std::mem;
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 
+/// A typedef for a type-erased `StateStream` trait object.
 pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
 
+/// An event from a `StateStream`.
 pub enum StreamEvent<I, S> {
+    /// The next item in the stream.
     Next(I),
+    /// The state of the stream, returned when streaming has completed.
     Done(S),
 }
 
+/// A variant of `futures::Stream` which returns a state value when it completes.
 pub trait StateStream {
+    /// The items being streamed.
     type Item;
+    /// The state returned when streaming completes.
     type State;
+    /// The error returned.
     type Error;
 
+    /// Similar to `Stream::poll`.
+    ///
+    /// The end of a stream is indicated by a `StreamEvent::Done` value. The result of calling
+    /// `poll` after the end of the stream or an error has been reached is unspecified.
     fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, Self::Error>;
 
+    /// Returns this stream as a boxed trait object.
     #[inline]
     fn boxed(self) -> BoxStateStream<Self::Item, Self::State, Self::Error>
         where Self: Sized + Send + 'static
@@ -28,6 +47,7 @@ pub trait StateStream {
         Box::new(self)
     }
 
+    /// Returns a future which yields the next element of the stream.
     #[inline]
     fn into_future(self) -> IntoFuture<Self>
         where Self: Sized
@@ -35,6 +55,7 @@ pub trait StateStream {
         IntoFuture(Some(self))
     }
 
+    /// Returns a normal `Stream` which yields the elements of this stream and discards the state.
     #[inline]
     fn into_stream(self) -> IntoStream<Self>
         where Self: Sized
@@ -42,6 +63,7 @@ pub trait StateStream {
         IntoStream(self)
     }
 
+    /// Returns a stream which applies a transform to items of this stream.
     #[inline]
     fn map<F, B>(self, f: F) -> Map<Self, F>
         where Self: Sized,
@@ -53,6 +75,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which applies a transform to errors of this stream.
     #[inline]
     fn map_err<F, B>(self, f: F) -> MapErr<Self, F>
         where Self: Sized,
@@ -64,6 +87,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which applies a transform to the state of this stream.
     #[inline]
     fn map_state<F, B>(self, f: F) -> MapState<Self, F>
         where Self: Sized,
@@ -75,6 +99,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which filters items of this stream by a predicate.
     #[inline]
     fn filter<F>(self, f: F) -> Filter<Self, F>
         where Self: Sized,
@@ -86,6 +111,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which filters and transforms items of this stream by a predicate.
     #[inline]
     fn filter_map<F, B>(self, f: F) -> FilterMap<Self, F>
         where Self: Sized,
@@ -98,6 +124,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which transforms results of this stream into a new future.
     #[inline]
     fn then<F, U>(self, f: F) -> Then<Self, F, U>
         where Self: Sized,
@@ -112,6 +139,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which transforms items of this stream into a new future.
     #[inline]
     fn and_then<F, U>(self, f: F) -> AndThen<Self, F, U>
         where Self: Sized,
@@ -126,6 +154,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which transforms the state of this stream into a new future.
     #[inline]
     fn and_then_state<F, U>(self, f: F) -> AndThenState<Self, F, U>
         where Self: Sized,
@@ -140,6 +169,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which transforms errors of this stream into a new future.
     #[inline]
     fn or_else<F, U>(self, f: F) -> OrElse<Self, F, U>
         where Self: Sized,
@@ -153,6 +183,8 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which collects all items of this stream into a `Vec`, returning it along
+    /// with the stream's state.
     #[inline]
     fn collect(self) -> Collect<Self>
         where Self: Sized
@@ -163,6 +195,7 @@ pub trait StateStream {
         }
     }
 
+    /// Applies a fold across all elements of this stream and its state.
     #[inline]
     fn fold<T, F, Fut, G, Fut2>(self, init: T, next: F, done: G) -> Fold<Self, T, F, Fut, G, Fut2>
         where Self: Sized,
@@ -180,6 +213,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which skips initial elements matching a predicate.
     #[inline]
     fn skip_while<P, R>(self, pred: P) -> SkipWhile<Self, P, R>
         where Self: Sized,
@@ -194,6 +228,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a future which applies a closure to each item of this stream.
     #[inline]
     fn for_each<F>(self, f: F) -> ForEach<Self, F>
         where Self: Sized,
@@ -205,6 +240,7 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a future which catches panics generated by this stream.
     #[inline]
     fn catch_unwind(self) -> CatchUnwind<Self>
         where Self: Sized + UnwindSafe
@@ -212,6 +248,7 @@ pub trait StateStream {
         CatchUnwind(self)
     }
 
+    /// Returns a stream which buffers a fixed number of items of this stream.
     #[inline]
     fn buffered(self, amt: usize) -> Buffered<Self>
         where Self: Sized,
@@ -226,6 +263,8 @@ pub trait StateStream {
         }
     }
 
+    /// Returns a stream which buffers a fixed number of items of this stream, returning them out
+    /// of order as they become ready.
     #[inline]
     fn buffered_unordered(self, amt: usize) -> BufferedUnordered<Self>
         where Self: Sized,
@@ -285,7 +324,9 @@ impl<S> StateStream for AssertUnwindSafe<S>
     }
 }
 
+/// An extension trait adding functionality to `Future`.
 pub trait FutureExt: Future {
+    /// Returns a stream which evaluates this future and then the resulting stream.
     #[inline]
     fn flatten_state_stream(self) -> FlattenStateStream<Self>
         where Self: Sized,
@@ -299,13 +340,18 @@ impl<F: ?Sized> FutureExt for F
     where F: Future
 {}
 
-#[inline]
-pub fn stream<S>(stream: S) -> FromStream<S>
-    where S: Stream
-{
-    FromStream(stream)
+/// An extension trait adding functionality to `Stream`.
+pub trait StreamExt: Stream {
+    /// Returns a `StateStream` yielding the items of this stream with a unit state.
+    #[inline]
+    fn into_state_stream(self) -> FromStream<Self>
+        where Self: Sized
+    {
+        FromStream(self)
+    }
 }
 
+/// Returns a stream produced by iteratively applying a closure to a state.
 #[inline]
 pub fn unfold<T, F, Fut, It, St>(init: T, f: F) -> Unfold<T, F, Fut>
      where F: FnMut(T) -> Fut,
@@ -317,6 +363,7 @@ pub fn unfold<T, F, Fut, It, St>(init: T, f: F) -> Unfold<T, F, Fut>
     }
 }
 
+/// A `StateStream` yielding elements of a normal `Stream.
 pub struct FromStream<S>(S);
 
 impl<S> StateStream for FromStream<S>
@@ -338,6 +385,7 @@ impl<S> StateStream for FromStream<S>
     }
 }
 
+/// A future yielding the next element of a stream.
 pub struct IntoFuture<S>(Option<S>);
 
 impl<S> Future for IntoFuture<S>
@@ -361,6 +409,7 @@ impl<S> Future for IntoFuture<S>
     }
 }
 
+/// A `Stream` yielding the elements of a `StateStream` and discarding its state.
 pub struct IntoStream<S>(S);
 
 impl<S> Stream for IntoStream<S>
@@ -381,6 +430,7 @@ impl<S> Stream for IntoStream<S>
     }
 }
 
+/// A stream which applies a transform to the elements of a stream.
 pub struct Map<S, F> {
     stream: S,
     f: F,
@@ -406,6 +456,7 @@ impl<S, F, B> StateStream for Map<S, F>
     }
 }
 
+/// A stream which applies a transform to the errors of a stream.
 pub struct MapErr<S, F> {
     stream: S,
     f: F,
@@ -428,6 +479,7 @@ impl<S, F, B> StateStream for MapErr<S, F>
     }
 }
 
+/// A stream which applies a transform to the state of a stream.
 pub struct MapState<S, F> {
     stream: S,
     f: Option<F>,
@@ -456,6 +508,7 @@ impl<S, F, B> StateStream for MapState<S, F>
     }
 }
 
+/// A future which collects the items of a stream.
 pub struct Collect<S>
     where S: StateStream
 {
@@ -485,6 +538,7 @@ impl<S> Future for Collect<S>
     }
 }
 
+/// A stream which iteratively applies a closure to state to produce items.
 pub struct Unfold<T, F, Fut>
     where Fut: futures::IntoFuture
 {
@@ -542,6 +596,7 @@ enum FlattenStateStreamState<F>
     Stream(F::Item),
 }
 
+/// A stream which evaluates a futures and then then stream returned by it.
 pub struct FlattenStateStream<F>(FlattenStateStreamState<F>)
     where F: Future;
 
@@ -570,6 +625,7 @@ impl<F> StateStream for FlattenStateStream<F>
     }
 }
 
+/// A stream which applies a filter to the items of a stream.
 pub struct Filter<S, F> {
     stream: S,
     f: F,
@@ -598,6 +654,7 @@ impl<S, F> StateStream for Filter<S, F>
     }
 }
 
+/// A stream which applies a filter and transform to items of a stream.
 pub struct FilterMap<S, F> {
     stream: S,
     f: F,
@@ -629,6 +686,7 @@ impl<S, F, B> StateStream for FilterMap<S, F>
     }
 }
 
+/// A stream which applies a transform to results of a stream.
 pub struct Then<S, F, U>
     where U: futures::IntoFuture
 {
@@ -674,6 +732,7 @@ impl<S, F, U> StateStream for Then<S, F, U>
     }
 }
 
+/// A stream which applies a transform to items of a stream.
 pub struct AndThen<S, F, U>
     where U: futures::IntoFuture
 {
@@ -714,6 +773,7 @@ where S: StateStream,
     }
 }
 
+/// A stream which applies a transform to the state of a stream.
 pub struct AndThenState<S, F, U>
     where U: futures::IntoFuture
 {
@@ -754,6 +814,7 @@ where S: StateStream,
     }
 }
 
+/// A stream which applies a transform to errors of a stream.
 pub struct OrElse<S, F, U>
     where U: futures::IntoFuture
 {
@@ -808,6 +869,7 @@ enum FoldState<T, Fut, G, Fut2>
     Empty,
 }
 
+/// A future which applies closures over each item of a stream and its state.
 pub struct Fold<S, T, F, Fut, G, Fut2>
     where Fut: futures::IntoFuture,
           Fut2: futures::IntoFuture
@@ -871,6 +933,7 @@ impl<S, T, F, Fut, G, Fut2> Future for Fold<S, T, F, Fut, G, Fut2>
     }
 }
 
+/// A stream which skips initial items of a stream matching a predicate.
 pub struct SkipWhile<S, P, R>
     where S: StateStream,
           R: futures::IntoFuture
@@ -922,6 +985,7 @@ impl<S, P, R> StateStream for SkipWhile<S, P, R>
     }
 }
 
+/// A future which applies a closure to each item of a stream.
 pub struct ForEach<S, F> {
     stream: S,
     f: F,
@@ -945,6 +1009,7 @@ impl<S, F> Future for ForEach<S, F>
     }
 }
 
+/// A stream which catches panics generated by a stream.
 pub struct CatchUnwind<S>(S);
 
 impl<S> StateStream for CatchUnwind<S>
@@ -981,6 +1046,7 @@ enum BufferedStreamState<S> {
     Done(Option<S>),
 }
 
+/// A stream which buffers items of a stream.
 pub struct Buffered<S>
     where S: StateStream,
           S::Item: futures::IntoFuture<Error=S::Error>
@@ -1059,6 +1125,7 @@ enum UnorderedStreamState<S> {
     Done(Option<S>),
 }
 
+/// A stream which buffers items of a stream, returning them as they become ready.
 pub struct BufferedUnordered<S>
     where S: StateStream,
           S::Item: futures::IntoFuture<Error=S::Error>
