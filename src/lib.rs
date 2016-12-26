@@ -1,3 +1,4 @@
+#[macro_use]
 extern crate futures;
 
 use futures::{Async, Poll, Future, Stream};
@@ -173,6 +174,20 @@ pub trait StateStream {
             stream: self,
             next: next,
             state: FoldState::Ready(init, done),
+        }
+    }
+
+    #[inline]
+    fn skip_while<P, R>(self, pred: P) -> SkipWhile<Self, P, R>
+        where Self: Sized,
+              P: FnMut(&Self::Item) -> R,
+              R: futures::IntoFuture<Item = bool, Error = Self::Error>
+    {
+        SkipWhile {
+            stream: self,
+            pred: pred,
+            cur: None,
+            done: false,
         }
     }
 }
@@ -771,6 +786,57 @@ impl<S, T, F, Fut, G, Fut2> Future for Fold<S, T, F, Fut, G, Fut2>
                     }
                 }
                 FoldState::Empty => panic!("cannot poll Fold twice"),
+            }
+        }
+    }
+}
+
+pub struct SkipWhile<S, P, R>
+    where S: StateStream,
+          R: futures::IntoFuture
+{
+    stream: S,
+    pred: P,
+    cur: Option<(R::Future, S::Item)>,
+    done: bool,
+}
+
+impl<S, P, R> StateStream for SkipWhile<S, P, R>
+    where S: StateStream,
+          P: FnMut(&S::Item) -> R,
+          R: futures::IntoFuture<Item = bool, Error = S::Error>
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, S::Error> {
+        if self.done {
+            return self.stream.poll();
+        }
+
+        loop {
+            if let Some((mut fut, item)) = self.cur.take() {
+                match try!(fut.poll()) {
+                    Async::Ready(true) => {}
+                    Async::Ready(false) => {
+                        self.done = true;
+                        return Ok(Async::Ready(StreamEvent::Next(item)))
+                    }
+                    Async::NotReady => {
+                        self.cur = Some((fut, item));
+                        return Ok(Async::NotReady);
+                    }
+                }
+            }
+
+            match try_ready!(self.stream.poll()) {
+                StreamEvent::Next(i) => {
+                    let fut = (self.pred)(&i).into_future();
+                    self.cur = Some((fut, i));
+                }
+                StreamEvent::Done(s) => return Ok(Async::Ready(StreamEvent::Done(s))),
             }
         }
     }
