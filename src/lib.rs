@@ -225,6 +225,19 @@ impl<S: ?Sized> StateStream for Box<S>
     }
 }
 
+impl<'a, S: ?Sized> StateStream for &'a mut S
+    where S: StateStream
+{
+    type Item = S::Item;
+    type State = S::State;
+    type Error = S::Error;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, S::State>, S::Error> {
+        S::poll(self)
+    }
+}
+
 impl<S> StateStream for AssertUnwindSafe<S>
     where S: StateStream
 {
