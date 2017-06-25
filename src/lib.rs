@@ -352,6 +352,10 @@ pub trait StreamExt: Stream {
     }
 }
 
+impl<S: ?Sized> StreamExt for S
+    where S: Stream
+{}
+
 /// Returns a stream produced by iteratively applying a closure to a state.
 #[inline]
 pub fn unfold<T, F, Fut, It, St>(init: T, f: F) -> Unfold<T, F, Fut>
