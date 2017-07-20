@@ -1,6 +1,6 @@
 # futures-state-stream
 
-[![Build Status](https://travis-ci.org/sfackler/futures-state-stream.svg?branch=master)](https://travis-ci.org/sfackler/futures-state-stream)
+[![CircleCI](https://circleci.com/gh/sfackler/futures-state-stream.svg?style=shield)](https://circleci.com/gh/sfackler/futures-state-stream)
 
 [Documentation](https://docs.rs/futures-state-stream/0.1.0/futures_state_stream)
 
