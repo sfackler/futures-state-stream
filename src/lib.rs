@@ -196,21 +196,19 @@ pub trait StateStream {
         }
     }
 
-    /// Applies a fold across all elements of this stream and its state.
+    /// Applies a fold across all elements of this stream, returning the accumulator along with
+    /// the stream's state.
     #[inline]
-    fn fold<T, F, Fut, G, Fut2>(self, init: T, next: F, done: G) -> Fold<Self, T, F, Fut, G, Fut2>
+    fn fold<T, F, Fut>(self, init: T, next: F) -> Fold<Self, T, F, Fut>
         where Self: Sized,
               F: FnMut(T, Self::Item) -> Fut,
               Fut: futures::IntoFuture<Item = T>,
               Self::Error: From<Fut::Error>,
-              G: FnOnce(T, Self::State) -> Fut2,
-              Fut2: futures::IntoFuture<Item = T>,
-              Self::Error: From<Fut2::Error>
     {
         Fold {
             stream: self,
             next: next,
-            state: FoldState::Ready(init, done),
+            state: FoldState::Ready(init),
         }
     }
 
@@ -864,70 +862,55 @@ where S: StateStream,
     }
 }
 
-enum FoldState<T, Fut, G, Fut2>
-    where Fut: futures::IntoFuture,
-          Fut2: futures::IntoFuture
+enum FoldState<T, Fut>
+    where Fut: futures::IntoFuture
 {
-    Ready(T, G),
-    Processing(Fut::Future, G),
-    ProcessingDone(Fut2::Future),
+    Ready(T),
+    Processing(Fut::Future),
     Empty,
 }
 
 /// A future which applies closures over each item of a stream and its state.
-pub struct Fold<S, T, F, Fut, G, Fut2>
-    where Fut: futures::IntoFuture,
-          Fut2: futures::IntoFuture
+pub struct Fold<S, T, F, Fut>
+    where Fut: futures::IntoFuture
 {
     stream: S,
     next: F,
-    state: FoldState<T, Fut, G, Fut2>,
+    state: FoldState<T, Fut>,
 }
 
-impl<S, T, F, Fut, G, Fut2> Future for Fold<S, T, F, Fut, G, Fut2>
+impl<S, T, F, Fut> Future for Fold<S, T, F, Fut>
     where S: StateStream,
           F: FnMut(T, S::Item) -> Fut,
           Fut: futures::IntoFuture<Item = T>,
           S::Error: From<Fut::Error>,
-          G: FnOnce(T, S::State) -> Fut2,
-          Fut2: futures::IntoFuture<Item = T>,
-          S::Error: From<Fut2::Error>
 {
-    type Item = T;
+    type Item = (T, S::State);
     type Error = S::Error;
 
     #[inline]
-    fn poll(&mut self) -> Poll<T, S::Error> {
+    fn poll(&mut self) -> Poll<(T, S::State), S::Error> {
         loop {
             match mem::replace(&mut self.state, FoldState::Empty) {
-                FoldState::Ready(t, g) => {
+                FoldState::Ready(t) => {
                     match try!(self.stream.poll()) {
                         Async::Ready(StreamEvent::Next(i)) => {
-                            self.state = FoldState::Processing((self.next)(t, i).into_future(), g);
+                            self.state = FoldState::Processing((self.next)(t, i).into_future());
                         }
                         Async::Ready(StreamEvent::Done(s)) => {
-                            self.state = FoldState::ProcessingDone(g(t, s).into_future());
+                            return Ok(Async::Ready((t, s)));
                         }
                         Async::NotReady => {
-                            self.state = FoldState::Ready(t, g);
+                            self.state = FoldState::Ready(t);
                             return Ok(Async::NotReady);
                         }
                     }
                 }
-                FoldState::Processing(mut fut, g) => {
+                FoldState::Processing(mut fut) => {
                     match try!(fut.poll()) {
-                        Async::Ready(t) => self.state = FoldState::Ready(t, g),
+                        Async::Ready(t) => self.state = FoldState::Ready(t),
                         Async::NotReady => {
-                            self.state = FoldState::Processing(fut, g);
-                            return Ok(Async::NotReady);
-                        }
-                    }
-                }
-                FoldState::ProcessingDone(mut fut) => {
-                    match try!(fut.poll()) {
-                        Async::Ready(t) => return Ok(Async::Ready(t)),
-                        Async::NotReady => {
-                            self.state = FoldState::ProcessingDone(fut);
+                            self.state = FoldState::Processing(fut);
                             return Ok(Async::NotReady);
                         }
                     }
