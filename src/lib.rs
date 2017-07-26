@@ -342,17 +342,17 @@ impl<F: ?Sized> FutureExt for F
 {}
 
 /// An extension trait adding functionality to `Stream`.
-pub trait StreamExt: Stream {
+pub trait StreamExt<S>: Stream {
     /// Returns a `StateStream` yielding the items of this stream with a unit state.
     #[inline]
-    fn into_state_stream(self) -> FromStream<Self>
+    fn into_state_stream(self, s: S) -> FromStream<Self, S>
         where Self: Sized
     {
-        FromStream(self)
+        FromStream(self, Some(s))
     }
 }
 
-impl<S: ?Sized> StreamExt for S
+impl<S: ?Sized, T> StreamExt<T> for S
     where S: Stream
 {}
 
@@ -369,21 +369,23 @@ pub fn unfold<T, F, Fut, It, St>(init: T, f: F) -> Unfold<T, F, Fut>
 }
 
 /// A `StateStream` yielding elements of a normal `Stream.
-pub struct FromStream<S>(S);
+pub struct FromStream<S, T>(S, Option<T>);
 
-impl<S> StateStream for FromStream<S>
+impl<S, T> StateStream for FromStream<S, T>
     where S: Stream
 {
     type Item = S::Item;
-    type State = ();
+    type State = T;
     type Error = S::Error;
 
     #[inline]
-    fn poll(&mut self) -> Poll<StreamEvent<S::Item, ()>, S::Error> {
+    fn poll(&mut self) -> Poll<StreamEvent<S::Item, T>, S::Error> {
         self.0.poll().map(|a| {
             match a {
                 Async::Ready(Some(i)) => Async::Ready(StreamEvent::Next(i)),
-                Async::Ready(None) => Async::Ready(StreamEvent::Done(())),
+                Async::Ready(None) => Async::Ready(StreamEvent::Done(
+                    self.1.take().expect("poll called after completion")
+                )),
                 Async::NotReady => Async::NotReady,
             }
         })
