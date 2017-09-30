@@ -3,7 +3,7 @@
 //! This is useful in contexts where a value "becomes" a stream for a period of time, but then
 //! switches back to its original type.
 #![warn(missing_docs)]
-#![doc(html_root_url="https://docs.rs/futures-state-stream/0.1.1")]
+#![doc(html_root_url="https://docs.rs/futures-state-stream/0.2")]
 
 #[macro_use]
 extern crate futures;
