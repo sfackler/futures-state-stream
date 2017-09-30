@@ -12,9 +12,6 @@ use futures::{Async, Poll, Future, Stream};
 use std::mem;
 use std::panic::AssertUnwindSafe;
 
-/// A typedef for a type-erased `StateStream` trait object.
-pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
-
 /// An event from a `StateStream`.
 pub enum StreamEvent<I, S> {
     /// The next item in the stream.
