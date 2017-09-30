@@ -3,7 +3,7 @@
 //! This is useful in contexts where a value "becomes" a stream for a period of time, but then
 //! switches back to its original type.
 #![warn(missing_docs)]
-#![doc(html_root_url="https://docs.rs/futures-state-stream/0.1.1")]
+#![doc(html_root_url="https://docs.rs/futures-state-stream/0.2")]
 
 #[macro_use]
 extern crate futures;
@@ -11,9 +11,6 @@ extern crate futures;
 use futures::{Async, Poll, Future, Stream};
 use std::mem;
 use std::panic::AssertUnwindSafe;
-
-/// A typedef for a type-erased `StateStream` trait object.
-pub type BoxStateStream<T, S, E> = Box<StateStream<Item = T, State = S, Error = E> + Send>;
 
 /// An event from a `StateStream`.
 pub enum StreamEvent<I, S> {
@@ -37,15 +34,6 @@ pub trait StateStream {
     /// The end of a stream is indicated by a `StreamEvent::Done` value. The result of calling
     /// `poll` after the end of the stream or an error has been reached is unspecified.
     fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, (Self::Error, Self::State)>;
-
-    /// Returns this stream as a boxed trait object.
-    #[inline]
-    fn boxed(self) -> BoxStateStream<Self::Item, Self::State, Self::Error>
-    where
-        Self: Sized + Send + 'static,
-    {
-        Box::new(self)
-    }
 
     /// Returns a future which yields the next element of the stream.
     #[inline]
