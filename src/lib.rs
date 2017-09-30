@@ -38,15 +38,6 @@ pub trait StateStream {
     /// `poll` after the end of the stream or an error has been reached is unspecified.
     fn poll(&mut self) -> Poll<StreamEvent<Self::Item, Self::State>, (Self::Error, Self::State)>;
 
-    /// Returns this stream as a boxed trait object.
-    #[inline]
-    fn boxed(self) -> BoxStateStream<Self::Item, Self::State, Self::Error>
-    where
-        Self: Sized + Send + 'static,
-    {
-        Box::new(self)
-    }
-
     /// Returns a future which yields the next element of the stream.
     #[inline]
     fn into_future(self) -> IntoFuture<Self>
