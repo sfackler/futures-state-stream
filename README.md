@@ -2,7 +2,7 @@
 
 [![CircleCI](https://circleci.com/gh/sfackler/futures-state-stream.svg?style=shield)](https://circleci.com/gh/sfackler/futures-state-stream)
 
-[Documentation](https://docs.rs/futures-state-stream/0.1.0/futures_state_stream)
+[Documentation](https://docs.rs/futures-state-stream)
 
 A version of the futures crate's Stream which returns state on completion
 
