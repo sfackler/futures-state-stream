@@ -129,6 +129,20 @@ pub trait StateStream {
     {
         ForEach { stream: self, f: f }
     }
+
+    /// Execute an accumulating computation over a stream, collecting all the values into one
+    /// final result.
+    #[inline]
+    fn fold<T, F, Fut>(self, init: T, next: F) -> Fold<Self, T, F>
+        where Self: Sized,
+              F: FnMut(T, Self::Item) -> T,
+    {
+        Fold {
+            stream: self,
+            next: next,
+            state: Some(init),
+        }
+    }
 }
 
 impl<S: ?Sized> StateStream for Box<S>
@@ -585,6 +599,42 @@ where
             match try_ready!(self.stream.poll()) {
                 StreamEvent::Next(i) => (self.f)(i),
                 StreamEvent::Done(s) => return Ok(Async::Ready(s)),
+            }
+        }
+    }
+}
+
+/// A future which applies closures over each item of a stream and its state.
+pub struct Fold<S, T, F> {
+    stream: S,
+    next: F,
+    state: Option<T>,
+}
+
+impl<S, T, F> Future for Fold<S, T, F>
+    where S: StateStream,
+          F: FnMut(T, S::Item) -> T,
+{
+    type Item = (T, S::State);
+    type Error = (S::Error, S::State);
+
+    #[inline]
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            match self.stream.poll() {
+                Ok(Async::Ready(StreamEvent::Next(i))) => {
+                    let state = self.state.take().unwrap();
+                    self.state.get_or_insert((self.next)(state, i));
+                },
+                Ok(Async::Ready(StreamEvent::Done(s))) => {
+                    return Ok(Async::Ready((self.state.take().unwrap(), s)));
+                },
+                Ok(Async::NotReady) => {
+                    return Ok(Async::NotReady);
+                },
+                Err(e) => {
+                    return Err(e);
+                },
             }
         }
     }
