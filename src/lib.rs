@@ -133,14 +133,17 @@ pub trait StateStream {
     /// Execute an accumulating computation over a stream, collecting all the values into one
     /// final result.
     #[inline]
-    fn fold<T, F, Fut>(self, init: T, next: F) -> Fold<Self, T, F>
+    fn fold<T, F, Fut>(self, init: T, next: F) -> Fold<Self, T, F, Fut>
         where Self: Sized,
-              F: FnMut(T, Self::Item) -> T,
+              F: FnMut(T, Self::Item) -> Fut,
+              Fut: Future<Item=(Self::Item, T)>,
+              Self::Error: From<Fut::Error>,
     {
         Fold {
             stream: self,
+            error: None,
             next: next,
-            state: Some(init),
+            state: FoldState::Ready(init),
         }
     }
 }
@@ -604,16 +607,29 @@ where
     }
 }
 
-/// A future which applies closures over each item of a stream and its state.
-pub struct Fold<S, T, F> {
-    stream: S,
-    next: F,
-    state: Option<T>,
+enum FoldState<T, Fut>
+    where Fut: futures::IntoFuture
+{
+    Ready(T),
+    Processing(Fut::Future),
+    Empty,
 }
 
-impl<S, T, F> Future for Fold<S, T, F>
+/// A future which applies closures over each item of a stream and its state.
+pub struct Fold<S, T, F, Fut>
+    where Fut: futures::IntoFuture
+{
+    stream: S,
+    error: Option<Fut::Error>,
+    next: F,
+    state: FoldState<T, Fut>,
+}
+
+impl<S, T, F, Fut> Future for Fold<S, T, F, Fut>
     where S: StateStream,
-          F: FnMut(T, S::Item) -> T,
+          F: FnMut(T, S::Item) -> Fut,
+          Fut: futures::IntoFuture<Item = T>,
+          S::Error: From<Fut::Error>,
 {
     type Item = (T, S::State);
     type Error = (S::Error, S::State);
@@ -621,20 +637,45 @@ impl<S, T, F> Future for Fold<S, T, F>
     #[inline]
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
-            match self.stream.poll() {
-                Ok(Async::Ready(StreamEvent::Next(i))) => {
-                    let state = self.state.take().unwrap();
-                    self.state.get_or_insert((self.next)(state, i));
+            match mem::replace(&mut self.state, FoldState::Empty) {
+                FoldState::Ready(t) => {
+                    match self.stream.poll()? {
+                        Async::Ready(StreamEvent::Next(i)) => {
+                            if self.error.is_some() {
+                                return Ok(Async::NotReady);
+                            }
+                            self.state = FoldState::Processing((self.next)(t, i).into_future());
+                        },
+                        Async::Ready(StreamEvent::Done(s)) => {
+                            let errored = self.error.is_some();
+                            if errored {
+                                let e = self.error.take().unwrap();
+                                return Err((e.into(), s))
+                            } else {
+                                return Ok(Async::Ready((t, s)));
+                            }
+                        },
+                        Async::NotReady => {
+                            self.state = FoldState::Ready(t);
+                            return Ok(Async::NotReady);
+                        }
+                    }
                 },
-                Ok(Async::Ready(StreamEvent::Done(s))) => {
-                    return Ok(Async::Ready((self.state.take().unwrap(), s)));
+                FoldState::Processing(mut fut) => {
+                    match fut.poll() {
+                        Ok(Async::Ready(t)) => {
+                            self.state = FoldState::Ready(t);
+                        },
+                        Ok(Async::NotReady) => {
+                            self.state = FoldState::Processing(fut);
+                            return Ok(Async::NotReady);
+                        },
+                        Err(e) => {
+                            self.error.get_or_insert(e);
+                        },
+                    }
                 },
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                },
-                Err(e) => {
-                    return Err(e);
-                },
+                FoldState::Empty => panic!("cannot poll Fold twice"),
             }
         }
     }
